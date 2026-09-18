@@ -68,7 +68,7 @@ LIST_HEAD(device_list);
 LIST_HEAD(pending_list);
 struct timed_mutex md_lock;
 struct timed_mutex device_lock;
-pthread_mutex_t pending_lock;
+struct timed_mutex pending_lock;
 pthread_cond_t pending_cond;
 pthread_attr_t monitor_attr;
 pthread_attr_t cli_attr;
@@ -1480,12 +1480,12 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		info("%s: Failing all devices on side %d, status %s",
 		     md_name, dev->md_side, md_rdev_print_state(status));
 		if (list_empty(&md_dev->pending)) {
-			pthread_mutex_lock(&pending_lock);
+			timed_mutex_lock(&pending_lock);
 			md_dev->pending_status = status;
 			md_dev->pending_side = (1 << dev->md_side);
 			list_add(&md_dev->pending, &pending_list);
 			pthread_cond_signal(&pending_cond);
-			pthread_mutex_unlock(&pending_lock);
+			timed_mutex_unlock(&pending_lock);
 		} else {
 			info("%s: fail already scheduled", md_name);
 		}
@@ -1582,12 +1582,12 @@ static void reset_mirror(struct device_monitor *dev)
 
 	pthread_mutex_lock(&md_dev->status_lock);
 	if (list_empty(&md_dev->pending)) {
-		pthread_mutex_lock(&pending_lock);
+		timed_mutex_lock(&pending_lock);
 		md_dev->pending_status = IN_SYNC;
 		md_dev->pending_side = (1 << dev->md_side);
 		list_add(&md_dev->pending, &pending_list);
 		pthread_cond_signal(&pending_cond);
-		pthread_mutex_unlock(&pending_lock);
+		timed_mutex_unlock(&pending_lock);
 	} else {
 		info("%s: reset already scheduled", md_name);
 	}
@@ -2377,7 +2377,7 @@ static void *mdadm_exec_thread (void *ctx)
 
 	while (thr->running) {
 		INIT_LIST_HEAD(&active_list);
-		pthread_mutex_lock(&pending_lock);
+		timed_mutex_lock(&pending_lock);
 		if (list_empty(&pending_list)) {
 			int rc;
 
@@ -2385,16 +2385,16 @@ static void *mdadm_exec_thread (void *ctx)
 			     failfast_timeout);
 			if (gettimeofday(&start_time, NULL)) {
 				err("md_exec: failed to get time: %m");
-				pthread_mutex_unlock(&pending_lock);
+				timed_mutex_unlock(&pending_lock);
 				break;
 			}
 			tmo.tv_sec = start_time.tv_sec + failfast_timeout;
 			tmo.tv_nsec = 0;
-			rc = pthread_cond_timedwait(&pending_cond,
-						    &pending_lock,
-						    &tmo);
+			rc = timed_mutex_cond_timedwait(&pending_cond,
+							&pending_lock,
+							&tmo);
 			if (rc < 0) {
-				pthread_mutex_unlock(&pending_lock);
+				timed_mutex_unlock(&pending_lock);
 				if (rc == ETIMEDOUT) {
 					dbg("md_exec: timeout");
 					continue;
@@ -2406,7 +2406,7 @@ static void *mdadm_exec_thread (void *ctx)
 			}
 		}
 		list_splice_init(&pending_list, &active_list);
-		pthread_mutex_unlock(&pending_lock);
+		timed_mutex_unlock(&pending_lock);
 		if (list_empty(&active_list))
 			continue;
 		list_for_each_entry_safe(md_dev, tmp, &active_list, pending) {
@@ -3259,7 +3259,7 @@ int main(int argc, char *argv[])
 
 	timed_mutex_init(&md_lock, NULL);
 	timed_mutex_init(&device_lock, NULL);
-	pthread_mutex_init(&pending_lock, NULL);
+	timed_mutex_init(&pending_lock, NULL);
 	pthread_cond_init(&pending_cond, NULL);
 
 	/* set signal handlers */
