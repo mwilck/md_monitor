@@ -20,6 +20,41 @@
 #ifndef _MD_MONITOR_H
 #define _MD_MONITOR_H
 
+#include <time.h>
+#include <pthread.h>
+
+/*
+ * timed_mutex: a pthread_mutex_t wrapper that records the
+ * CLOCK_MONOTONIC timestamp at which it was acquired, so that the
+ * hold time can be measured on unlock (or before a condvar wait) and
+ * logged via log_fn() if it exceeds LOCK_HOLD_THRESHOLD_MS.
+ *
+ * 'acquired' is only ever read/written while the calling thread
+ * holds 'mutex', so no additional synchronization is required.
+ */
+#define LOCK_HOLD_THRESHOLD_MS 100 /* log if a lock is held longer than this */
+
+struct timed_mutex {
+	pthread_mutex_t mutex;
+	struct timespec acquired;
+};
+
+extern void timed_mutex_init(struct timed_mutex *tm, const pthread_mutexattr_t *attr);
+extern void timed_mutex_destroy(struct timed_mutex *tm);
+extern void timed_mutex_lock_impl(struct timed_mutex *tm, const char *caller);
+extern void timed_mutex_unlock_impl(struct timed_mutex *tm, const char *caller);
+extern int timed_mutex_cond_wait_impl(pthread_cond_t *cond, struct timed_mutex *tm,
+				      const char *caller);
+extern int timed_mutex_cond_timedwait_impl(pthread_cond_t *cond, struct timed_mutex *tm,
+					   const struct timespec *abstime,
+					   const char *caller);
+
+#define timed_mutex_lock(tm) timed_mutex_lock_impl((tm), __func__)
+#define timed_mutex_unlock(tm) timed_mutex_unlock_impl((tm), __func__)
+#define timed_mutex_cond_wait(c, tm) timed_mutex_cond_wait_impl((c), (tm), __func__)
+#define timed_mutex_cond_timedwait(c, tm, ts) \
+	timed_mutex_cond_timedwait_impl((c), (tm), (ts), __func__)
+
 enum md_rdev_status {
 	UNKNOWN,	/* Not checked */
 	IN_SYNC,	/* device is in sync */

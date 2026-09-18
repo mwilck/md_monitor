@@ -114,6 +114,108 @@ void log_fn(int priority, const char *format, ...)
 	va_end(ap);
 }
 
+/*
+ * timed_mutex helpers
+ *
+ * Wrap a plain pthread_mutex_t with a timestamp that records when
+ * the mutex was acquired (CLOCK_MONOTONIC). On unlock we compute how
+ * long the lock was held and, if that exceeds LOCK_HOLD_THRESHOLD_MS,
+ * log a warning including the name of the calling function.
+ */
+void timed_mutex_init(struct timed_mutex *tm, const pthread_mutexattr_t *attr)
+{
+	pthread_mutex_init(&tm->mutex, attr);
+	tm->acquired.tv_sec = 0;
+	tm->acquired.tv_nsec = 0;
+}
+
+void timed_mutex_destroy(struct timed_mutex *tm)
+{
+	pthread_mutex_destroy(&tm->mutex);
+}
+
+static long timed_mutex_elapsed_ms(const struct timespec *start,
+				   struct timespec *diff)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	diff->tv_sec = now.tv_sec - start->tv_sec;
+	diff->tv_nsec = now.tv_nsec - start->tv_nsec;
+	if (diff->tv_nsec < 0) {
+		diff->tv_sec--;
+		diff->tv_nsec += 1000000000L;
+	}
+	return diff->tv_sec * 1000L + diff->tv_nsec / 1000000L;
+}
+
+void timed_mutex_lock_impl(struct timed_mutex *tm, const char *caller)
+{
+	pthread_mutex_lock(&tm->mutex);
+	clock_gettime(CLOCK_MONOTONIC, &tm->acquired);
+}
+
+void timed_mutex_unlock_impl(struct timed_mutex *tm, const char *caller)
+{
+	struct timespec diff;
+	long held_ms;
+
+	held_ms = timed_mutex_elapsed_ms(&tm->acquired, &diff);
+	pthread_mutex_unlock(&tm->mutex);
+	if (held_ms >= LOCK_HOLD_THRESHOLD_MS) {
+		log_fn(LOG_WARNING,
+		      "%s: lock held for %ld.%03ld sec\n",
+		      caller, (long)diff.tv_sec,
+		      diff.tv_nsec / 1000000L);
+	}
+}
+
+int timed_mutex_cond_wait_impl(pthread_cond_t *cond, struct timed_mutex *tm,
+			       const char *caller)
+{
+	struct timespec diff;
+	long held_ms;
+	int rc;
+
+	/*
+	 * pthread_cond_wait() atomically unlocks the mutex while
+	 * waiting and re-locks it before returning. Account for the
+	 * time held before the wait, then reset the acquisition time
+	 * once we own the mutex again.
+	 */
+	held_ms = timed_mutex_elapsed_ms(&tm->acquired, &diff);
+	if (held_ms >= LOCK_HOLD_THRESHOLD_MS) {
+		log_fn(LOG_WARNING,
+		      "%s: lock held for %ld.%03ld sec before wait\n",
+		      caller, (long)diff.tv_sec,
+		      diff.tv_nsec / 1000000L);
+	}
+	rc = pthread_cond_wait(cond, &tm->mutex);
+	clock_gettime(CLOCK_MONOTONIC, &tm->acquired);
+	return rc;
+}
+
+int timed_mutex_cond_timedwait_impl(pthread_cond_t *cond,
+				    struct timed_mutex *tm,
+				    const struct timespec *abstime,
+				    const char *caller)
+{
+	struct timespec diff;
+	long held_ms;
+	int rc;
+
+	held_ms = timed_mutex_elapsed_ms(&tm->acquired, &diff);
+	if (held_ms >= LOCK_HOLD_THRESHOLD_MS) {
+		log_fn(LOG_WARNING,
+		      "%s: lock held for %ld.%03ld sec before wait\n",
+		      caller, (long)diff.tv_sec,
+		      diff.tv_nsec / 1000000L);
+	}
+	rc = pthread_cond_timedwait(cond, &tm->mutex, abstime);
+	clock_gettime(CLOCK_MONOTONIC, &tm->acquired);
+	return rc;
+}
+
 struct md_rdev_state_t {
 	enum md_rdev_status state;
 	char desc_short;
