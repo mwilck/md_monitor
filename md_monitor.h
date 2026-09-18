@@ -121,7 +121,7 @@ struct device_monitor {
 	char dev_name[MD_NAMELEN];
 	char md_name[MD_NAMELEN];
 	pthread_t thread;
-	pthread_mutex_t lock;
+	struct timed_mutex lock;
 	pthread_cond_t io_cond;
 	enum md_rdev_status md_status;
 	enum device_io_status io_status;

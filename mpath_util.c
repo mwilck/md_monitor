@@ -422,11 +422,11 @@ void *mpath_status_thread (void *ctx)
 				continue;
 			}
 			/* Write status back */
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			new_status = md_rdev_update_state(dev, md_status, md_slot);
 			dev->io_status = io_status;
 			pthread_cond_signal(&dev->io_cond);
-			pthread_mutex_unlock(&dev->lock);
+			timed_mutex_unlock(&dev->lock);
 			new_status = device_monitor_update(dev, io_status,
 							   new_status);
 			info("%s: state %s / %s",

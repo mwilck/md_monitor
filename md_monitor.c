@@ -436,20 +436,20 @@ static struct device_monitor * lookup_md_component(struct md_monitor *md_dev,
 				}
 			}
 		}
-		pthread_mutex_lock(&tmp->lock);
+		timed_mutex_lock(&tmp->lock);
 		if (!strncmp(devname, tmp->md_name,
 			     strlen(devname))) {
 			found = tmp;
-			pthread_mutex_unlock(&tmp->lock);
+			timed_mutex_unlock(&tmp->lock);
 			break;
 		}
 		if (!strncmp(devname, tmp->dev_name,
 			     strlen(devname))) {
 			found = tmp;
-			pthread_mutex_unlock(&tmp->lock);
+			timed_mutex_unlock(&tmp->lock);
 			break;
 		}
-		pthread_mutex_unlock(&tmp->lock);
+		timed_mutex_unlock(&tmp->lock);
 	}
 out:
 	pthread_mutex_unlock(&md_dev->device_lock);
@@ -539,9 +539,9 @@ static struct device_monitor *device_monitor_get(struct device_monitor *dev)
 	if (!dev)
 		return NULL;
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	dev->ref++;
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 
 	return dev;
 }
@@ -551,18 +551,18 @@ static void device_monitor_put(struct device_monitor *dev)
 	if (!dev)
 		return;
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	dev->ref--;
 	if (dev->ref == 0) {
 		udev_device_unref(dev->device);
 		dev->device = NULL;
-		pthread_mutex_unlock(&dev->lock);
-		pthread_mutex_destroy(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
+		timed_mutex_destroy(&dev->lock);
 		pthread_cond_destroy(&dev->io_cond);
 		free(dev);
 		return;
 	}
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 }
 
 static struct device_monitor *allocate_device(struct udev_device *udev_dev)
@@ -587,7 +587,7 @@ static struct device_monitor *allocate_device(struct udev_device *udev_dev)
 	dev->md_index = -1;
 	dev->md_side = -1;
 	dev->io_status = IO_UNKNOWN;
-	pthread_mutex_init(&dev->lock, NULL);
+	timed_mutex_init(&dev->lock, NULL);
 	pthread_cond_init(&dev->io_cond, NULL);
 	INIT_LIST_HEAD(&dev->siblings);
 	udev_device_ref(dev->device);
@@ -736,10 +736,10 @@ static void detach_device(struct udev_device *udev_dev)
 			struct md_monitor *md_dev;
 			const char *mdname = NULL;
 
-			pthread_mutex_lock(&found->lock);
+			timed_mutex_lock(&found->lock);
 			if (found->parent)
 				mdname = udev_device_get_sysname(found->parent);
-			pthread_mutex_unlock(&found->lock);
+			timed_mutex_unlock(&found->lock);
 			md_dev = lookup_md(mdname, 0);
 			if (md_dev) {
 				remove_md_component(md_dev, found);
@@ -1040,11 +1040,11 @@ void device_monitor_cleanup(void *data)
 	}
 
 	info("%s: shutdown device monitor thread", dev->dev_name);
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	dev->running = 0;
 	dev->thread = 0;
 	pthread_cond_signal(&dev->io_cond);
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	device_monitor_put(dev);
 }
 
@@ -1089,13 +1089,13 @@ device_monitor_update(struct device_monitor *dev,
 	} else {
 		switch (new_status) {
 		case IN_SYNC:
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			if (dev->running && stop_on_sync) {
 				info("%s: path ok, stopping monitor",
 				     dev->dev_name);
 				dev->running = 0;
 			}
-			pthread_mutex_unlock(&dev->lock);
+			timed_mutex_unlock(&dev->lock);
 			break;
 		case RECOVERY:
 		case BLOCKED:
@@ -1138,7 +1138,7 @@ void *device_monitor_thread (void *ctx)
 		pthread_exit(&rc);
 	}
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	while (dev->running) {
 		dbg("%s: check aio state, timeout %d secs",
 		    dev->dev_name, aio_timeout);
@@ -1146,12 +1146,12 @@ void *device_monitor_thread (void *ctx)
 			dasd_timeout_ioctl(dev->device, 0);
 			dev->md_status = UNKNOWN;
 		}
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		io_status = dasd_check_aio(dev, aio_timeout);
 		if (io_status == IO_ERROR) {
 			warn("%s: error during aio submission, exit",
 			     dev->dev_name);
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			break;
 		}
 		pthread_testcancel();
@@ -1165,15 +1165,15 @@ void *device_monitor_thread (void *ctx)
 				info("%s: stopping monitor in status %s",
 				     dev->dev_name,
 				     md_rdev_print_state(md_status));
-				pthread_mutex_lock(&dev->lock);
+				timed_mutex_lock(&dev->lock);
 				break;
 			}
 
 			/* Write status back */
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			new_status = md_rdev_update_state(dev, md_status, md_slot);
 		} else {
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			new_status = TIMEOUT;
 		}
 		/* dev->lock held */
@@ -1183,14 +1183,14 @@ void *device_monitor_thread (void *ctx)
 			 * got interrupted by a signal.
 			 * Check whether we need to fail the mirror.
 			 */
-			pthread_mutex_unlock(&dev->lock);
+			timed_mutex_unlock(&dev->lock);
 			info("%s: path checker interrupted, new state %s",
 			     dev->dev_name, md_rdev_print_state(new_status));
 			if (new_status == FAULTY || new_status == TIMEOUT) {
 				fail_mirror(dev, new_status);
 			}
 			aio_timeout = monitor_timeout;
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			dev->io_status = io_status;
 			pthread_cond_signal(&dev->io_cond);
 			continue;
@@ -1209,13 +1209,13 @@ void *device_monitor_thread (void *ctx)
 		}
 		dev->io_status = io_status;
 		pthread_cond_signal(&dev->io_cond);
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		new_status = device_monitor_update(dev, io_status, new_status);
 		info("%s: state %s / %s",
 		     dev->dev_name, md_rdev_print_state(new_status),
 		     device_io_print_state(io_status));
 		if (new_status == STOPPED) {
-			pthread_mutex_lock(&dev->lock);
+			timed_mutex_lock(&dev->lock);
 			break;
 		}
 		tmo.tv_sec = sig_timeout;
@@ -1223,7 +1223,7 @@ void *device_monitor_thread (void *ctx)
 		info("%s: waiting %ld seconds ...",
 		     dev->dev_name, (long)tmo.tv_sec);
 		rc = sigtimedwait(&thread_sigmask, NULL, &tmo);
-		pthread_mutex_lock(&dev->lock);
+		timed_mutex_lock(&dev->lock);
 		if (rc < 0) {
 			if (errno == EINTR) {
 				info("%s: ignore signal",
@@ -1240,7 +1240,7 @@ void *device_monitor_thread (void *ctx)
 			aio_timeout = 0;
 		}
 	}
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 
 	pthread_cleanup_pop(1);
 	return ((void *)0);
@@ -1254,7 +1254,7 @@ static void monitor_device(struct device_monitor *dev)
 		return;
 
 	device_monitor_get(dev);
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->running) {
 		/* check if thread is still alive */
 		if (dev->thread) {
@@ -1264,32 +1264,32 @@ static void monitor_device(struct device_monitor *dev)
 			info("%s: notify monitor thread",
 			     dev->dev_name);
 			/* Release the lock to avoid deadlocking */
-			pthread_mutex_unlock(&dev->lock);
+			timed_mutex_unlock(&dev->lock);
 			device_monitor_put(dev);
 			pthread_kill(thread, SIGHUP);
 			return;
 		}
 		info("%s: Re-start monitor", dev->dev_name);
 		dev->running = 0;
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		/* Yield lock here to give stale threads time to react */
 		sched_yield();
 	} else {
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		/* Start new monitor thread */
 		info("%s: Start new monitor", dev->dev_name);
 	}
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	dev->running = 1;
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	rc = pthread_create(&dev->thread, &monitor_attr,
 			    device_monitor_thread, dev);
 	if (rc) {
-		pthread_mutex_lock(&dev->lock);
+		timed_mutex_lock(&dev->lock);
 		dev->running = 0;
 		dev->io_status = IO_UNKNOWN;
 		dev->thread = 0;
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		warn("%s: Failed to start monitor thread, error %d",
 		     dev->dev_name, rc);
 	}
@@ -1309,7 +1309,7 @@ static void add_component(struct md_monitor *md, struct device_monitor *dev,
 	if (md_namelen > MD_NAMELEN)
 		md_namelen = MD_NAMELEN;
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	info("%s: Add component %s (%d/%d)", dev->dev_name, md_name,
 	     dev->md_index, dev->md_slot);
 	if (!dev->parent) {
@@ -1322,7 +1322,7 @@ static void add_component(struct md_monitor *md, struct device_monitor *dev,
 		md_rdev_update_index(md, dev);
 	if (!strncmp(dev->dev_name, "dasd", 4))
 		is_dasd = 1;
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	if (is_dasd) {
 		dasd_set_attribute(dev, "failfast", 1);
 		if (dasd_set_attribute(dev, "timeout",
@@ -1340,11 +1340,11 @@ static void remove_component(struct device_monitor *dev)
 	info("%s: Remove component (%d/%d)",
 	     dev->dev_name, dev->md_index, dev->md_slot);
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->parent)
 		udev_device_unref(dev->parent);
 	dev->parent = NULL;
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 }
 
 static int fail_component(struct device_monitor *dev,
@@ -1356,11 +1356,11 @@ static int fail_component(struct device_monitor *dev,
 
 	/* Check state if we need to do anything here */
 	old_status = md_rdev_check_state(dev, &md_slot);
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	dev->md_status = old_status;
 	md_status = md_rdev_update_state(dev, new_status, md_slot);
 	if (md_status == new_status) {
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		info("%s: already in state '%s'",
 		     dev->dev_name, md_rdev_print_state(md_status));
 		return rc;
@@ -1370,13 +1370,13 @@ static int fail_component(struct device_monitor *dev,
 	if (dev->running && thread) {
 		if (new_status == REMOVED)
 			dev->running = 0;
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		info("%s: notify monitor thread for new status %s",
 		     dev->dev_name, md_rdev_print_state(new_status));
 		pthread_kill(thread, SIGHUP);
 		rc = EBUSY;
 	} else {
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 	}
 
 	return rc;
@@ -1384,11 +1384,11 @@ static int fail_component(struct device_monitor *dev,
 
 static int reset_component(struct device_monitor *dev)
 {
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->io_status != IO_OK) {
 		info("%s: I/O status %s, do not reset device", dev->dev_name,
 		     device_io_print_state(dev->io_status));
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		return -EIO;
 	}
 
@@ -1415,7 +1415,7 @@ static int reset_component(struct device_monitor *dev)
 		     md_rdev_print_state(dev->md_status));
 		break;
 	}
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 
 	return 0;
 }
@@ -1426,10 +1426,10 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 	struct device_monitor *tmp;
 	const char *md_name = NULL;
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->parent)
 		md_name = udev_device_get_sysname(dev->parent);
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	md_dev = lookup_md(md_name, 0);
 	if (!md_dev) {
 		warn("%s: No md device found", dev->dev_name);
@@ -1470,9 +1470,9 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		pthread_mutex_lock(&md_dev->device_lock);
 		list_for_each_entry(tmp, &md_dev->children, siblings) {
 			if (tmp->md_side == dev->md_side) {
-				pthread_mutex_lock(&tmp->lock);
+				timed_mutex_lock(&tmp->lock);
 				tmp->md_status = BLOCKED;
-				pthread_mutex_unlock(&tmp->lock);
+				timed_mutex_unlock(&tmp->lock);
 			}
 		}
 		pthread_mutex_unlock(&md_dev->device_lock);
@@ -1501,10 +1501,10 @@ static void reset_mirror(struct device_monitor *dev)
 	struct device_monitor *tmp;
 	const char *md_name = NULL;
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->parent)
 		md_name = udev_device_get_sysname(dev->parent);
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	md_dev = lookup_md(md_name, 0);
 	if (!md_dev) {
 		warn("%s: No md device found", dev->dev_name);
@@ -1536,18 +1536,18 @@ static void reset_mirror(struct device_monitor *dev)
 		int recheck = 0;
 		pthread_t thread;
 
-		pthread_mutex_lock(&tmp->lock);
+		timed_mutex_lock(&tmp->lock);
 		dbg("%s: dev %s side %d state %s / %s slot %d", md_name, tmp->dev_name,
 		     tmp->md_side, md_rdev_print_state(tmp->md_status),
 		     device_io_print_state(tmp->io_status));
 		if (tmp->md_status == RECOVERY) {
-			pthread_mutex_unlock(&tmp->lock);
+			timed_mutex_unlock(&tmp->lock);
 			continue;
 		}
 		if (tmp->io_status == IO_UNKNOWN ||
 		    tmp->io_status == IO_FAILED ||
 		    tmp->io_status == IO_RETRY) {
-			pthread_mutex_unlock(&tmp->lock);
+			timed_mutex_unlock(&tmp->lock);
 			continue;
 		}
 		if (tmp->md_side != dev->md_side)
@@ -1563,7 +1563,7 @@ static void reset_mirror(struct device_monitor *dev)
 			if (tmp->md_slot < 0)
 				ready_devices++;
 		}
-		pthread_mutex_unlock(&tmp->lock);
+		timed_mutex_unlock(&tmp->lock);
 		if (recheck) {
 			info("%s: notify monitor thread to recheck slot",
 			     tmp->dev_name);
@@ -1628,7 +1628,7 @@ static void fail_md_component(struct md_monitor *md_dev,
 		return;
 	} else if (md_status != TIMEOUT)
 		md_status = FAULTY;
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	new_status = md_rdev_update_state(dev, md_status, md_slot);
 	if (new_status == TIMEOUT)
 		dev->io_status = IO_TIMEOUT;
@@ -1636,7 +1636,7 @@ static void fail_md_component(struct md_monitor *md_dev,
 		dev->io_status = IO_FAILED;
 	else
 		dev->io_status = IO_OK;
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	if (new_status != IN_SYNC)
 		fail_mirror(dev, new_status);
 
@@ -1648,7 +1648,7 @@ static void sync_md_component(struct md_monitor *md_dev,
 {
 	const char *md_name = udev_device_get_sysname(md_dev->device);
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->md_status == PENDING) {
 		warn("%s: mdadm call still pending", dev->dev_name);
 	}
@@ -1659,7 +1659,7 @@ static void sync_md_component(struct md_monitor *md_dev,
 	 * IN_SYNC should override previous state.
 	 */
 	dev->md_status = IN_SYNC;
-	pthread_mutex_unlock(&dev->lock);
+	timed_mutex_unlock(&dev->lock);
 	monitor_device(dev);
 }
 
@@ -1668,7 +1668,7 @@ static void remove_md_component(struct md_monitor *md_dev,
 {
 	pthread_t thread;
 
-	pthread_mutex_lock(&dev->lock);
+	timed_mutex_lock(&dev->lock);
 	if (dev->md_status == PENDING) {
 		warn("%s: mdadm call still pending", dev->dev_name);
 	}
@@ -1680,12 +1680,12 @@ static void remove_md_component(struct md_monitor *md_dev,
 		info("%s: shutdown monitor thread",
 		     dev->dev_name);
 		dev->running = 0;
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		pthread_kill(thread, SIGHUP);
 		if (pthread_cancel(thread) == 0)
 			pthread_join(thread, NULL);
 	} else {
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 	}
 }
 
@@ -1770,7 +1770,7 @@ static void discover_md_components(struct md_monitor *md)
 			}
 		}
 		if (found) {
-			pthread_mutex_lock(&found->lock);
+			timed_mutex_lock(&found->lock);
 			if (!found->parent)
 				found->parent = md->device;
 
@@ -1781,7 +1781,7 @@ static void discover_md_components(struct md_monitor *md)
 			found->md_slot = info.raid_disk;
 			if (found->md_slot_saved < 0 && found->md_slot >= 0)
 				found->md_slot_saved = found->md_slot;
-			pthread_mutex_unlock(&found->lock);
+			timed_mutex_unlock(&found->lock);
 			list_move(&found->siblings, &md->children);
 			monitor_device(found);
 			found = NULL;
@@ -1814,13 +1814,13 @@ static void discover_md_components(struct md_monitor *md)
 			     udev_device_get_devpath(mon_dev));
 			unlock_device_list();
 		}
-		pthread_mutex_lock(&found->lock);
+		timed_mutex_lock(&found->lock);
 		found->md_index = i;
 		found->md_slot = info.raid_disk;
 		if (found->md_slot_saved < 0 && found->md_slot >= 0)
 			found->md_slot_saved = found->md_slot;
 		found->md_side = found->md_slot % (md->layout & 0xFF);
-		pthread_mutex_unlock(&found->lock);
+		timed_mutex_unlock(&found->lock);
 		sysname = udev_device_get_sysname(raid_dev);
 		if (!strncmp(sysname, "dm-", 3)) {
 			sysname = udev_device_get_sysattr_value(raid_dev,
@@ -2160,9 +2160,9 @@ static int display_md_status(struct md_monitor *md_dev, char *buf, int buflen)
 			max_slot = slot;
 		if (slot >= buflen)
 			continue;
-		pthread_mutex_lock(&dev->lock);
+		timed_mutex_lock(&dev->lock);
 		status = md_rdev_print_state_short(dev->md_status);
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		buf[slot] = status;
 		if (slot + 1> len)
 			len = slot + 1;
@@ -2199,12 +2199,12 @@ static int display_io_status(struct md_monitor *md_dev, char *buf, int buflen)
 			max_slot = slot;
 		if (slot >= buflen)
 			continue;
-		pthread_mutex_lock(&dev->lock);
+		timed_mutex_lock(&dev->lock);
 		while (dev->ioctx && dev->io_status == IO_UNKNOWN)
-			pthread_cond_wait(&dev->io_cond, &dev->lock);
+			timed_mutex_cond_wait(&dev->io_cond, &dev->lock);
 
 		status = device_io_print_state_short(dev->io_status);
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 
 		buf[slot] = status;
 		if (slot + 1> len)
@@ -2246,12 +2246,12 @@ static int display_md(struct md_monitor *md_dev, char *buf)
 		int md_slot = -1;
 
 		md_status = md_rdev_check_state(dev, &md_slot);
-		pthread_mutex_lock(&dev->lock);
+		timed_mutex_lock(&dev->lock);
 		md_rdev_update_state(dev, md_status, md_slot);
 		while (dev->ioctx && dev->io_status == IO_UNKNOWN)
-			pthread_cond_wait(&dev->io_cond, &dev->lock);
+			timed_mutex_cond_wait(&dev->io_cond, &dev->lock);
 
-		pthread_mutex_unlock(&dev->lock);
+		timed_mutex_unlock(&dev->lock);
 		len = sprintf(status, "%s: dev %s slot %d/%d status %s %s\n",
 			      mdname, dev->dev_name,
 			      dev->md_slot, md_dev->raid_disks,
