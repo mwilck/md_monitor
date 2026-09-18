@@ -66,7 +66,7 @@ const char version_str[] = "md_monitor version 6.6";
 LIST_HEAD(md_list);
 LIST_HEAD(device_list);
 LIST_HEAD(pending_list);
-pthread_mutex_t md_lock;
+struct timed_mutex md_lock;
 pthread_mutex_t device_lock;
 pthread_mutex_t pending_lock;
 pthread_cond_t pending_cond;
@@ -337,7 +337,7 @@ static struct md_monitor *lookup_md(const char *mdname, int remove)
 	if (!mdname)
 		return NULL;
 
-	pthread_mutex_lock(&md_lock);
+	timed_mutex_lock(&md_lock);
 	list_for_each_entry(tmp, &md_list, entry) {
 		const char *tmpname = udev_device_get_sysname(tmp->device);
 		if (!strcmp(tmp->dev_name, mdname)) {
@@ -351,7 +351,7 @@ static struct md_monitor *lookup_md(const char *mdname, int remove)
 	}
 	if (remove && md)
 		list_del_init(&md->entry);
-	pthread_mutex_unlock(&md_lock);
+	timed_mutex_unlock(&md_lock);
 	return md;
 }
 
@@ -370,7 +370,7 @@ static struct md_monitor *lookup_md_alias(const char *mdpath)
 	else
 		mdname++;
 
-	pthread_mutex_lock(&md_lock);
+	timed_mutex_lock(&md_lock);
 	list_for_each_entry(tmp, &md_list, entry) {
 		if (strlen(tmp->dev_name) && !strcmp(tmp->dev_name, mdname)) {
 			md = tmp;
@@ -388,7 +388,7 @@ static struct md_monitor *lookup_md_alias(const char *mdpath)
 			break;
 		}
 	}
-	pthread_mutex_unlock(&md_lock);
+	timed_mutex_unlock(&md_lock);
 	return md;
 }
 
@@ -463,7 +463,7 @@ static struct md_monitor *lookup_md_new(struct udev_device *md_dev)
 	struct md_monitor *tmp, *md = NULL;
 
 	alias_name = udev_device_get_property_value(md_dev, "MD_DEVICE");
-	pthread_mutex_lock(&md_lock);
+	timed_mutex_lock(&md_lock);
 	list_for_each_entry(tmp, &md_list, entry) {
 		const char *tmpname;
 
@@ -512,7 +512,7 @@ static struct md_monitor *lookup_md_new(struct udev_device *md_dev)
 		udev_device_ref(md_dev);
 	}
 out_unlock:
-	pthread_mutex_unlock(&md_lock);
+	timed_mutex_unlock(&md_lock);
 	return md;
 }
 
@@ -2631,7 +2631,7 @@ void *cli_monitor_thread(void *ctx)
 			 * removed by the time we get here.
 			 * So double-check.
 			 */
-			pthread_mutex_lock(&md_lock);
+			timed_mutex_lock(&md_lock);
 			md_dev = NULL;
 			list_for_each_entry(tmp, &md_list, entry) {
 				const char *tmpname;
@@ -2648,7 +2648,7 @@ void *cli_monitor_thread(void *ctx)
 			}
 			if (md_dev)
 				list_del_init(&md_dev->entry);
-			pthread_mutex_unlock(&md_lock);
+			timed_mutex_unlock(&md_lock);
 			if (md_dev) {
 				info("%s: array stopped", md_dev->dev_name);
 				remove_md(md_dev);
@@ -3257,7 +3257,7 @@ int main(int argc, char *argv[])
 	setup_thread_attr(&monitor_attr, 64 * 1024, 1);
 	setup_thread_attr(&cli_attr, 64 * 1024, 0);
 
-	pthread_mutex_init(&md_lock, NULL);
+	timed_mutex_init(&md_lock, NULL);
 	pthread_mutex_init(&device_lock, NULL);
 	pthread_mutex_init(&pending_lock, NULL);
 	pthread_cond_init(&pending_cond, NULL);
@@ -3385,12 +3385,12 @@ int main(int argc, char *argv[])
 
 out:
 	info("shutting down");
-	pthread_mutex_lock(&md_lock);
+	timed_mutex_lock(&md_lock);
 	list_for_each_entry_safe(found_md, tmp_md, &md_list, entry) {
 		list_del_init(&found_md->entry);
 		remove_md(found_md);
 	}
-	pthread_mutex_unlock(&md_lock);
+	timed_mutex_unlock(&md_lock);
 
 	lock_device_list();
 	list_for_each_entry_safe(found_dev, tmp_dev, &device_list, entry) {
