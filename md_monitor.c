@@ -407,13 +407,13 @@ static struct device_monitor * lookup_md_component(struct md_monitor *md_dev,
 	    strncmp(devname, "dm-", 3)) {
 		lookup_symlinks = 1;
 	}
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	if (!md_dev->device) {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		return NULL;
 	}
-	pthread_mutex_unlock(&md_dev->status_lock);
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	list_for_each_entry(tmp, &md_dev->children, siblings) {
 		/* No locking required, tmp->device is static */
 		if (lookup_symlinks) {
@@ -452,7 +452,7 @@ static struct device_monitor * lookup_md_component(struct md_monitor *md_dev,
 		timed_mutex_unlock(&tmp->lock);
 	}
 out:
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 	return found;
 }
 
@@ -502,8 +502,8 @@ static struct md_monitor *lookup_md_new(struct udev_device *md_dev)
 		md->raid_disks = -1;
 		INIT_LIST_HEAD(&md->children);
 		INIT_LIST_HEAD(&md->pending);
-		pthread_mutex_init(&md->status_lock, NULL);
-		pthread_mutex_init(&md->device_lock, NULL);
+		timed_mutex_init(&md->status_lock, NULL);
+		timed_mutex_init(&md->device_lock, NULL);
 		list_add(&md->entry, &md_list);
 		info("%s: create new array", mdname);
 	}
@@ -696,7 +696,7 @@ static void attach_device(struct udev_device *udev_dev)
 	if (found_md) {
 		const char *mdname = udev_device_get_sysname(found_md->device);
 
-		pthread_mutex_lock(&found_md->device_lock);
+		timed_mutex_lock(&found_md->device_lock);
 		if (!list_empty(&found->siblings)) {
 			warn("%s: Already monitoring %s",
 			     mdname, found->md_name);
@@ -706,7 +706,7 @@ static void attach_device(struct udev_device *udev_dev)
 			list_add(&found->siblings, &found_md->children);
 			monitor_device(found);
 		}
-		pthread_mutex_unlock(&found_md->device_lock);
+		timed_mutex_unlock(&found_md->device_lock);
 	} else {
 		dbg("%s: no md array found", devname);
 	}
@@ -743,9 +743,9 @@ static void detach_device(struct udev_device *udev_dev)
 			md_dev = lookup_md(mdname, 0);
 			if (md_dev) {
 				remove_md_component(md_dev, found);
-				pthread_mutex_lock(&md_dev->device_lock);
+				timed_mutex_lock(&md_dev->device_lock);
 				list_del_init(&found->siblings);
-				pthread_mutex_unlock(&md_dev->device_lock);
+				timed_mutex_unlock(&md_dev->device_lock);
 				remove_component(found);
 			}
 		}
@@ -1445,29 +1445,29 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		return;
 	}
 
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	if (!md_dev->device) {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		return;
 	}
 	if (md_dev->pending_status) {
 		info("%s: %s already scheduled, not failing", md_name,
 		     md_rdev_print_state(md_dev->pending_status));
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		return;
 	}
 
 	if (md_dev->degraded & (1 << dev->md_side)) {
 		/* Mirror side is already failed, nothing to be done here */
 		info("%s: mirror side %d is already failed", md_name, dev->md_side);
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 	} else if (md_dev->degraded) {
 		/* Mirror is already degraded, do not notify md */
 		info("%s: other mirror side for %d is already failed",
 		     md_name, dev->md_side);
 		md_dev->degraded |= (1 << dev->md_side);
-		pthread_mutex_unlock(&md_dev->status_lock);
-		pthread_mutex_lock(&md_dev->device_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_lock(&md_dev->device_lock);
 		list_for_each_entry(tmp, &md_dev->children, siblings) {
 			if (tmp->md_side == dev->md_side) {
 				timed_mutex_lock(&tmp->lock);
@@ -1475,7 +1475,7 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 				timed_mutex_unlock(&tmp->lock);
 			}
 		}
-		pthread_mutex_unlock(&md_dev->device_lock);
+		timed_mutex_unlock(&md_dev->device_lock);
 	} else {
 		info("%s: Failing all devices on side %d, status %s",
 		     md_name, dev->md_side, md_rdev_print_state(status));
@@ -1489,7 +1489,7 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		} else {
 			info("%s: fail already scheduled", md_name);
 		}
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 	}
 
 }
@@ -1510,27 +1510,27 @@ static void reset_mirror(struct device_monitor *dev)
 		warn("%s: No md device found", dev->dev_name);
 		return;
 	}
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	if (!md_dev->device) {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		return;
 	}
 	md_name = udev_device_get_sysname(md_dev->device);
 	if (md_dev->in_recovery) {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		info("%s: array in recovery, skip reset", md_name);
 		return;
 	}
 	if (md_dev->pending_status) {
 		info("%s: %s already scheduled, not resetting", md_name,
 		     md_rdev_print_state(md_dev->pending_status));
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		return;
 	}
-	pthread_mutex_unlock(&md_dev->status_lock);
+	timed_mutex_unlock(&md_dev->status_lock);
 
 	info("%s: reset mirror side %d", md_name, dev->md_side);
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	ready_devices = 0;
 	list_for_each_entry(tmp, &md_dev->children, siblings) {
 		int recheck = 0;
@@ -1570,7 +1570,7 @@ static void reset_mirror(struct device_monitor *dev)
 			pthread_kill(thread, SIGHUP);
 		}
 	}
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 	/* Not enough devices, don't reset mirror side */
 	if (ready_devices != md_dev->raid_disks) {
 		info("%s: not enough devices to reset (%d/%d)", md_name,
@@ -1580,7 +1580,7 @@ static void reset_mirror(struct device_monitor *dev)
 	info("%s: reset mirror, %d of %d devices ready", md_name,
 	     ready_devices, md_dev->raid_disks);
 
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	if (list_empty(&md_dev->pending)) {
 		timed_mutex_lock(&pending_lock);
 		md_dev->pending_status = IN_SYNC;
@@ -1591,7 +1591,7 @@ static void reset_mirror(struct device_monitor *dev)
 	} else {
 		info("%s: reset already scheduled", md_name);
 	}
-	pthread_mutex_unlock(&md_dev->status_lock);
+	timed_mutex_unlock(&md_dev->status_lock);
 }
 
 static void fail_md_component(struct md_monitor *md_dev,
@@ -1717,7 +1717,7 @@ static void discover_md_components(struct md_monitor *md)
 	}
 	/* Temporarily move children devices onto a separate list */
 	INIT_LIST_HEAD(&update_list);
-	pthread_mutex_lock(&md->device_lock);
+	timed_mutex_lock(&md->device_lock);
 	list_splice_init(&md->children, &update_list);
 	for (i = 0; i < 4096; i++) {
 		dev_t raid_devt, mon_devt, tmp_devt;
@@ -1844,11 +1844,11 @@ static void discover_md_components(struct md_monitor *md)
 		}
 		found = NULL;
 	}
-	pthread_mutex_unlock(&md->device_lock);
-	pthread_mutex_lock(&md->status_lock);
+	timed_mutex_unlock(&md->device_lock);
+	timed_mutex_lock(&md->status_lock);
 	if (!md->in_recovery) {
 		/* Cleanup stale devices */
-		pthread_mutex_unlock(&md->status_lock);
+		timed_mutex_unlock(&md->status_lock);
 		list_for_each_entry_safe(found, tmp, &update_list, siblings) {
 			info("%s: Remove stale device",
 			     found->dev_name);
@@ -1856,13 +1856,13 @@ static void discover_md_components(struct md_monitor *md)
 			list_del_init(&found->siblings);
 			remove_component(found);
 		}
-		pthread_mutex_lock(&md->status_lock);
+		timed_mutex_lock(&md->status_lock);
 	} else {
 		info("%s: skip stale device detection, array in recovery",
 		     mdname);
 	}
 	md->in_discovery = 0;
-	pthread_mutex_unlock(&md->status_lock);
+	timed_mutex_unlock(&md->status_lock);
 	close(ioctl_fd);
 }
 
@@ -1874,25 +1874,25 @@ static int fail_md(struct md_monitor *md_dev)
 	enum md_rdev_status pending_status;
 	struct device_monitor *dev;
 
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	pending_side = md_dev->pending_side;
 	pending_status = md_dev->pending_status;
 
 	if (!md_dev->pending_side) {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		warn("%s: no pending side", md_name);
 		return 0;
 	}
 	if (md_dev->degraded & md_dev->pending_side) {
 		info("%s: mirror side %d already failed", md_name,
 		     (md_dev->pending_side >> 1));
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		return 0;
 	}
 	/* Set DASD timeout to abort all outstanding I/O */
 	if (md_dev->pending_status == TIMEOUT) {
-		pthread_mutex_unlock(&md_dev->status_lock);
-		pthread_mutex_lock(&md_dev->device_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_lock(&md_dev->device_lock);
 		list_for_each_entry(dev, &md_dev->children, siblings) {
 			if (dev->md_side == (pending_side >> 1)) {
 				if (!strncmp(dev->dev_name, "dasd", 4))
@@ -1902,9 +1902,9 @@ static int fail_md(struct md_monitor *md_dev)
 							      monitor_timeout);
 			}
 		}
-		pthread_mutex_unlock(&md_dev->device_lock);
+		timed_mutex_unlock(&md_dev->device_lock);
 	} else {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 	}
 
 	sprintf(cmdline, "mdadm --manage /dev/%s --fail set-%c", md_name,
@@ -1916,7 +1916,7 @@ static int fail_md(struct md_monitor *md_dev)
 	} else {
 		dbg("%s: mirror set-%c failed", md_name,
 		    (pending_side >> 1) ? 'B' : 'A');
-		pthread_mutex_lock(&md_dev->device_lock);
+		timed_mutex_lock(&md_dev->device_lock);
 		/*
 		 * When failing one side we need to disable the
 		 * 'failfast' setting on the other, as the array
@@ -1929,14 +1929,14 @@ static int fail_md(struct md_monitor *md_dev)
 				dasd_set_attribute(dev, "failfast", 0);
 			}
 		}
-		pthread_mutex_unlock(&md_dev->device_lock);
+		timed_mutex_unlock(&md_dev->device_lock);
 	}
 	if (!rc || rc == 512) {
-		pthread_mutex_lock(&md_dev->status_lock);
+		timed_mutex_lock(&md_dev->status_lock);
 		md_dev->degraded |= md_dev->pending_side;
 		md_dev->pending_side = 0;
 		md_dev->pending_status = UNKNOWN;
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 	}
 	return rc == 512 ? -EBUSY : -EIO;
 }
@@ -1948,21 +1948,21 @@ static int reset_md(struct md_monitor *md_dev)
 	int rc, ret = 0;
 	struct device_monitor *dev;
 
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	if (!md_dev->pending_side) {
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 		warn("%s: no pending side", md_name);
 		return 0;
 	}
-	pthread_mutex_unlock(&md_dev->status_lock);
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	list_for_each_entry(dev, &md_dev->children, siblings) {
 		if (reset_component(dev) < 0) {
-			pthread_mutex_unlock(&md_dev->device_lock);
+			timed_mutex_unlock(&md_dev->device_lock);
 			return 0;
 		}
 	}
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 	if (!md_name)
 		return -EINVAL;
 
@@ -1977,11 +1977,11 @@ static int reset_md(struct md_monitor *md_dev)
 		else
 			ret = -EIO;
 	} else {
-		pthread_mutex_lock(&md_dev->status_lock);
+		timed_mutex_lock(&md_dev->status_lock);
 		md_dev->degraded = 0;
 		md_dev->pending_side = 0;
 		md_dev->pending_status = UNKNOWN;
-		pthread_mutex_unlock(&md_dev->status_lock);
+		timed_mutex_unlock(&md_dev->status_lock);
 	}
 	return ret;
 }
@@ -1993,9 +1993,9 @@ static void remove_md(struct md_monitor *md_dev)
 	struct list_head remove_list;
 
 	INIT_LIST_HEAD(&remove_list);
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	list_splice_init(&md_dev->children, &remove_list);
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 
 	list_for_each_entry_safe(dev, tmp, &remove_list, siblings) {
 		info("%s: Remove MD component device %s",
@@ -2006,14 +2006,14 @@ static void remove_md(struct md_monitor *md_dev)
 	}
 
 	/* Synchronize with other threads */
-	pthread_mutex_lock(&md_dev->status_lock);
+	timed_mutex_lock(&md_dev->status_lock);
 	md_dev->device = NULL;
 	info("%s: Stop monitoring", md_dev->dev_name);
 	if (device)
 		udev_device_unref(device);
-	pthread_mutex_unlock(&md_dev->status_lock);
-	pthread_mutex_destroy(&md_dev->status_lock);
-	pthread_mutex_destroy(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->status_lock);
+	timed_mutex_destroy(&md_dev->status_lock);
+	timed_mutex_destroy(&md_dev->device_lock);
 	free(md_dev);
 }
 
@@ -2151,7 +2151,7 @@ static int display_md_status(struct md_monitor *md_dev, char *buf, int buflen)
 	char status;
 
 	memset(buf, '.', buflen - 1);
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	list_for_each_entry(dev, &md_dev->children, siblings) {
 		slot = dev->md_slot_saved;
 		if (slot < 0)
@@ -2167,7 +2167,7 @@ static int display_md_status(struct md_monitor *md_dev, char *buf, int buflen)
 		if (slot + 1> len)
 			len = slot + 1;
 	}
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 	max_slot++;
 	if (md_dev->raid_disks < buflen && md_dev->raid_disks > max_slot)
 		max_slot = md_dev->raid_disks;
@@ -2190,7 +2190,7 @@ static int display_io_status(struct md_monitor *md_dev, char *buf, int buflen)
 
 	memset(buf, '.', buflen - 1);
 
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	list_for_each_entry(dev, &md_dev->children, siblings) {
 		slot = dev->md_slot_saved;
 		if (slot < 0)
@@ -2210,7 +2210,7 @@ static int display_io_status(struct md_monitor *md_dev, char *buf, int buflen)
 		if (slot + 1> len)
 			len = slot + 1;
 	}
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 
 	max_slot++;
 	if (md_dev->raid_disks < buflen && md_dev->raid_disks > max_slot)
@@ -2239,7 +2239,7 @@ static int display_md(struct md_monitor *md_dev, char *buf)
 	if (rc) {
 		return -rc;
 	}
-	pthread_mutex_lock(&md_dev->device_lock);
+	timed_mutex_lock(&md_dev->device_lock);
 	buf[0] = '\0';
 	list_for_each_entry(dev, &md_dev->children, siblings) {
 		enum md_rdev_status md_status;
@@ -2267,7 +2267,7 @@ static int display_md(struct md_monitor *md_dev, char *buf)
 		strcat(buf + bufsize, status);
 		bufsize += len;
 	}
-	pthread_mutex_unlock(&md_dev->device_lock);
+	timed_mutex_unlock(&md_dev->device_lock);
 	/* Strip trailing newline */
 	if (bufsize > 0)
 		bufsize--;
@@ -2415,18 +2415,18 @@ static void *mdadm_exec_thread (void *ctx)
 			if (gettimeofday(&start_time, NULL) < 0)
 				start_time.tv_sec = 0;
 
-			pthread_mutex_lock(&md_dev->status_lock);
+			timed_mutex_lock(&md_dev->status_lock);
 			list_del_init(&md_dev->pending);
 			if (md_dev->pending_status == UNKNOWN) {
-				pthread_mutex_unlock(&md_dev->status_lock);
+				timed_mutex_unlock(&md_dev->status_lock);
 				dbg("%s: task already completed",
 				    md_dev->dev_name);
 			} else if (md_dev->pending_status != IN_SYNC) {
-				pthread_mutex_unlock(&md_dev->status_lock);
+				timed_mutex_unlock(&md_dev->status_lock);
 				do_fail = 1;
 				rc = fail_md(md_dev);
 			} else {
-				pthread_mutex_unlock(&md_dev->status_lock);
+				timed_mutex_unlock(&md_dev->status_lock);
 				rc = reset_md(md_dev);
 			}
 
@@ -2733,9 +2733,9 @@ void *cli_monitor_thread(void *ctx)
 		} else if (!strcmp(event, "Remove")) {
 			if (dev) {
 				remove_md_component(md_dev, dev);
-				pthread_mutex_lock(&md_dev->device_lock);
+				timed_mutex_lock(&md_dev->device_lock);
 				list_del_init(&dev->siblings);
-				pthread_mutex_unlock(&md_dev->device_lock);
+				timed_mutex_unlock(&md_dev->device_lock);
 				remove_component(dev);
 				buf[0] = 0;
 				iov.iov_len = 0;

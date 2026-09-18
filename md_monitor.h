@@ -99,9 +99,9 @@ struct md_monitor {
 	char dev_name[MD_NAMELEN];
 	struct list_head entry;
 	struct list_head children;
-	pthread_mutex_t device_lock;
+	struct timed_mutex device_lock;
 	struct udev_device *device;
-	pthread_mutex_t status_lock;
+	struct timed_mutex status_lock;
 	struct list_head pending;
 	enum md_rdev_status pending_status;
 	int pending_side;
