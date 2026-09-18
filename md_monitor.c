@@ -2556,22 +2556,26 @@ void *cli_monitor_thread(void *ctx)
 		if (buflen < 0) {
 			if (errno != EINTR)
 				err("error receiving cli message: %m");
-			continue;
+			buf[0] = errno ? : EIO;
+			goto send_msg;
 		}
 		cmsg = CMSG_FIRSTHDR(&smsg);
 		if (cmsg == NULL) {
 			warn("no cli credentials, ignore message");
-			continue;
+			buf[0] = EPERM;
+			goto send_msg;
 		}
 		if (cmsg->cmsg_type != SCM_CREDENTIALS) {
 			warn("invalid cli credentials %d/%d, ignore message",
 			     cmsg->cmsg_type, cmsg->cmsg_level);
-			continue;
+			buf[0] = EINVAL;
+			goto send_msg;
 		}
 		cred = (struct ucred *)CMSG_DATA(cmsg);
 		if (cred->uid != 0) {
 			warn("sender uid=%d, ignore message", cred->uid);
-			continue;
+			buf[0] = EPERM;
+			goto send_msg;
 		}
 		info("received %d/%d bytes from %s", buflen, sizeof(buf),
 		     &sun.sun_path[1]);
