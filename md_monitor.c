@@ -48,6 +48,7 @@
 #define MD_DISK_TIMEOUT 11
 #endif
 #include <pthread.h>
+#include <sched.h>
 #include <dirent.h>
 #include <libaio.h>
 
@@ -1170,7 +1171,7 @@ static void monitor_device(struct device_monitor *dev)
 		dev->running = 0;
 		pthread_mutex_unlock(&dev->lock);
 		/* Yield lock here to give stale threads time to react */
-		pthread_yield();
+		sched_yield();
 	} else {
 		pthread_mutex_unlock(&dev->lock);
 		/* Start new monitor thread */
