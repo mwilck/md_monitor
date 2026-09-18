@@ -27,12 +27,19 @@
  * timed_mutex: a pthread_mutex_t wrapper that records the
  * CLOCK_MONOTONIC timestamp at which it was acquired, so that the
  * hold time can be measured on unlock (or before a condvar wait) and
- * logged via log_fn() if it exceeds LOCK_HOLD_THRESHOLD_MS.
+ * logged via log_fn() if it exceeds lock_hold_threshold_ms.
  *
  * 'acquired' is only ever read/written while the calling thread
  * holds 'mutex', so no additional synchronization is required.
  */
-#define LOCK_HOLD_THRESHOLD_MS 100 /* log if a lock is held longer than this */
+
+/*
+ * Threshold (in milliseconds) beyond which a timed_mutex logs a
+ * warning about how long it was held. Set once at startup from the
+ * MDMONITOR_LOCK_TIMEOUT environment variable; a negative value
+ * (the default) disables logging entirely.
+ */
+extern long lock_hold_threshold_ms;
 
 struct timed_mutex {
 	pthread_mutex_t mutex;
@@ -54,6 +61,13 @@ extern int timed_mutex_cond_timedwait_impl(pthread_cond_t *cond, struct timed_mu
 #define timed_mutex_cond_wait(c, tm) timed_mutex_cond_wait_impl((c), (tm), __func__)
 #define timed_mutex_cond_timedwait(c, tm, ts) \
 	timed_mutex_cond_timedwait_impl((c), (tm), (ts), __func__)
+
+/*
+ * Initialize lock_hold_threshold_ms from the MDMONITOR_LOCK_TIMEOUT
+ * environment variable. Must be called once during startup, before
+ * any timed_mutex is locked/unlocked.
+ */
+extern void timed_mutex_init_threshold(void);
 
 enum md_rdev_status {
 	UNKNOWN,	/* Not checked */

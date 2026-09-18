@@ -119,9 +119,23 @@ void log_fn(int priority, const char *format, ...)
  *
  * Wrap a plain pthread_mutex_t with a timestamp that records when
  * the mutex was acquired (CLOCK_MONOTONIC). On unlock we compute how
- * long the lock was held and, if that exceeds LOCK_HOLD_THRESHOLD_MS,
+ * long the lock was held and, if that exceeds lock_hold_threshold_ms,
  * log a warning including the name of the calling function.
+ *
+ * A negative threshold (the default) disables the logging.
  */
+long lock_hold_threshold_ms = -1;
+
+void timed_mutex_init_threshold(void)
+{
+	const char *env = getenv("MDMONITOR_LOCK_TIMEOUT");
+
+	if (!env || !*env)
+		lock_hold_threshold_ms = -1;
+	else
+		lock_hold_threshold_ms = strtol(env, NULL, 10);
+}
+
 void timed_mutex_init(struct timed_mutex *tm, const pthread_mutexattr_t *attr)
 {
 	pthread_mutex_init(&tm->mutex, attr);
@@ -162,7 +176,7 @@ void timed_mutex_unlock_impl(struct timed_mutex *tm, const char *caller)
 
 	held_ms = timed_mutex_elapsed_ms(&tm->acquired, &diff);
 	pthread_mutex_unlock(&tm->mutex);
-	if (held_ms >= LOCK_HOLD_THRESHOLD_MS) {
+	if (lock_hold_threshold_ms >= 0 && held_ms >= lock_hold_threshold_ms) {
 		log_fn(LOG_WARNING,
 		      "%s: lock held for %ld.%03ld sec\n",
 		      caller, (long)diff.tv_sec,
@@ -184,7 +198,7 @@ int timed_mutex_cond_wait_impl(pthread_cond_t *cond, struct timed_mutex *tm,
 	 * once we own the mutex again.
 	 */
 	held_ms = timed_mutex_elapsed_ms(&tm->acquired, &diff);
-	if (held_ms >= LOCK_HOLD_THRESHOLD_MS) {
+	if (lock_hold_threshold_ms >= 0 && held_ms >= lock_hold_threshold_ms) {
 		log_fn(LOG_WARNING,
 		      "%s: lock held for %ld.%03ld sec before wait\n",
 		      caller, (long)diff.tv_sec,
@@ -205,7 +219,7 @@ int timed_mutex_cond_timedwait_impl(pthread_cond_t *cond,
 	int rc;
 
 	held_ms = timed_mutex_elapsed_ms(&tm->acquired, &diff);
-	if (held_ms >= LOCK_HOLD_THRESHOLD_MS) {
+	if (lock_hold_threshold_ms >= 0 && held_ms >= lock_hold_threshold_ms) {
 		log_fn(LOG_WARNING,
 		      "%s: lock held for %ld.%03ld sec before wait\n",
 		      caller, (long)diff.tv_sec,
@@ -3095,6 +3109,8 @@ int main(int argc, char *argv[])
 		{ "version", no_argument, NULL, 'V' },
 		{}
 	};
+
+	timed_mutex_init_threshold();
 
 	udev = udev_new();
 	if (udev == NULL)
