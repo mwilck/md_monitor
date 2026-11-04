@@ -1895,7 +1895,8 @@ static int fail_md(struct md_monitor *md_dev)
 	dbg("%s: call 'system' '%s'", md_name, cmdline);
 	rc = system(cmdline);
 	if (rc) {
-		warn("%s: cannot fail mirror, error %d", md_name, rc);
+		err("%s: cannot fail mirror, '%s' returned %d",
+		    md_name, cmdline, rc);
 	} else {
 		dbg("%s: mirror set-%c failed", md_name,
 		    (pending_side >> 1) ? 'B' : 'A');
@@ -1953,8 +1954,8 @@ static int reset_md(struct md_monitor *md_dev)
 	dbg("%s: call 'system' '%s'", md_name, cmdline);
 	rc = system(cmdline);
 	if (rc) {
-		warn("%s: cannot reset mirror, error %d",
-		     md_name, rc);
+		err("%s: cannot reset mirror, '%s' returned %d",
+		    md_name, cmdline, rc);
 		if (rc == 512)
 			ret = -EBUSY;
 		else
