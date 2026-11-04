@@ -1520,7 +1520,7 @@ static void reset_mirror(struct device_monitor *dev)
 		pthread_mutex_lock(&tmp->lock);
 		dbg("%s: dev %s side %d state %s / %s slot %d", md_name, tmp->dev_name,
 		     tmp->md_side, md_rdev_print_state(tmp->md_status),
-		     device_io_print_state(tmp->io_status));
+		     device_io_print_state(tmp->io_status), tmp->md_slot);
 		if (tmp->md_status == RECOVERY) {
 			pthread_mutex_unlock(&tmp->lock);
 			continue;
@@ -1808,7 +1808,8 @@ static void discover_md_components(struct md_monitor *md)
 			sysname = udev_device_get_sysattr_value(raid_dev,
 								"dm/name");
 			if (!sysname) {
-				warn("%s: no device-mapper name", sysname);
+				warn("%s: no device-mapper name",
+				     udev_device_get_sysname(raid_dev));
 				udev_device_unref(raid_dev);
 				continue;
 			}
@@ -2368,7 +2369,7 @@ static void *mdadm_exec_thread (void *ctx)
 		if (list_empty(&pending_list)) {
 			int rc;
 
-			info("md_exec: no requests, waiting %ld seconds",
+			info("md_exec: no requests, waiting %d seconds",
 			     failfast_timeout);
 			if (gettimeofday(&start_time, NULL)) {
 				err("md_exec: failed to get time: %m");
@@ -2554,7 +2555,7 @@ void *cli_monitor_thread(void *ctx)
 			iov.iov_len = 1;
 			goto send_msg;
 		}
-		info("received %d/%d bytes from %s", buflen, sizeof(buf),
+		info("received %zd/%zu bytes from %s", buflen, sizeof(buf),
 		     &sun.sun_path[1]);
 
 		event = buf;
@@ -2576,7 +2577,7 @@ void *cli_monitor_thread(void *ctx)
 		}
 		mdstr = strchr(buf, ':');
 		if (!mdstr || strlen(mdstr) < 2) {
-			warn("invalid message '%s' len %d", buf, buflen);
+			warn("invalid message '%s' len %zd", buf, buflen);
 			buf[0] = ENOMSG;
 			iov.iov_len = 1;
 			goto send_msg;
@@ -2686,7 +2687,7 @@ void *cli_monitor_thread(void *ctx)
 			goto send_msg;
 		}
 		if (!strcmp(event, "MirrorStatus")) {
-			info("%s: display mirror status for %d devices, len %d",
+			info("%s: display mirror status for %d devices, len %zd",
 			     mdstr, md_dev->raid_disks, buflen);
 			memset(buf, 0x00, CLI_BUFLEN);
 			event = NULL;
@@ -2702,7 +2703,7 @@ void *cli_monitor_thread(void *ctx)
 			goto send_msg;
 		}
 		if (!strcmp(event, "MonitorStatus")) {
-			info("%s: display monitor status for %d devices, len %d",
+			info("%s: display monitor status for %d devices, len %zd",
 			     mdstr, md_dev->raid_disks, buflen);
 			memset(buf, 0x00, sizeof(buf));
 			event = NULL;
@@ -3150,15 +3151,15 @@ int main(int argc, char *argv[])
 			if (cur.rlim_cur > max_proc) {
 				warn("Current process limit "
 				     "higher than requested "
-				     "(cur %d, req %d)",
-				     cur.rlim_cur, max_proc);
+				     "(cur %lu, req %lu)",
+				     (unsigned long)cur.rlim_cur, max_proc);
 				cur.rlim_cur = max_proc;
 			} else if (cur.rlim_max > max_proc) {
-				info("Increasing soft process limit to %d",
+				info("Increasing soft process limit to %lu",
 				     max_proc);
 				cur.rlim_cur = max_proc;
 			} else {
-				info("Increasing hard process limit to %d",
+				info("Increasing hard process limit to %lu",
 				     max_proc);
 				cur.rlim_cur = max_proc;
 				cur.rlim_max = max_proc;
@@ -3305,14 +3306,14 @@ int main(int argc, char *argv[])
 	}
 	if (cur.rlim_cur > max_files) {
 		warn("Current number of open files "
-		     "higher than requested (cur %d, req %d)",
-		     cur.rlim_cur, max_files);
+		     "higher than requested (cur %lu, req %lu)",
+		     (unsigned long)cur.rlim_cur, max_files);
 		cur.rlim_cur = max_files;
 	} else if (cur.rlim_max > max_files) {
-		info("Increasing soft open files limit to %d", max_files);
+		info("Increasing soft open files limit to %lu", max_files);
 		cur.rlim_cur = max_files;
 	} else {
-		info("Increasing hard open files limit to %d", max_files);
+		info("Increasing hard open files limit to %lu", max_files);
 		cur.rlim_cur = max_files;
 		cur.rlim_max = max_files;
 	}

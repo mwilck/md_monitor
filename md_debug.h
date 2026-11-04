@@ -25,6 +25,7 @@
 #define warn(fmt, args...) log_fn(LOG_WARNING, fmt "\n", ##args)
 #define err(fmt, args...) log_fn(LOG_ERR, fmt "\n", ##args)
 
-extern void log_fn(int priority, const char *format, ...);
+extern void log_fn(int priority, const char *format, ...)
+	__attribute__((format(printf, 2, 3)));
 
 #endif /* _MD_DEBUG_H */
