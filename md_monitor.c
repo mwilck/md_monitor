@@ -1917,6 +1917,18 @@ static void discover_md_components(struct md_monitor *md)
 	close(ioctl_fd);
 }
 
+/*
+ * Finish a pending request. Must be called with status_lock held.
+ * The request must be cleared on every exit path of fail_md() and
+ * reset_md(), otherwise fail_mirror() and reset_mirror() would ignore
+ * this array forever.
+ */
+static void clear_pending(struct md_monitor *md_dev)
+{
+	md_dev->pending_side = 0;
+	md_dev->pending_status = UNKNOWN;
+}
+
 static int fail_md(struct md_monitor *md_dev)
 {
 	const char *md_name = udev_device_get_sysname(md_dev->device);
@@ -1930,6 +1942,7 @@ static int fail_md(struct md_monitor *md_dev)
 	pending_status = md_dev->pending_status;
 
 	if (!md_dev->pending_side) {
+		clear_pending(md_dev);
 		pthread_mutex_unlock(&md_dev->status_lock);
 		warn("%s: no pending side", md_name);
 		return 0;
@@ -1937,6 +1950,7 @@ static int fail_md(struct md_monitor *md_dev)
 	if (md_dev->degraded & md_dev->pending_side) {
 		info("%s: mirror side %d already failed", md_name,
 		     (md_dev->pending_side >> 1));
+		clear_pending(md_dev);
 		pthread_mutex_unlock(&md_dev->status_lock);
 		return 0;
 	}
@@ -1983,13 +1997,13 @@ static int fail_md(struct md_monitor *md_dev)
 		}
 		pthread_mutex_unlock(&md_dev->device_lock);
 	}
-	if (!rc || rc == 512) {
-		pthread_mutex_lock(&md_dev->status_lock);
+	pthread_mutex_lock(&md_dev->status_lock);
+	if (!rc || rc == 512)
 		md_dev->degraded |= md_dev->pending_side;
-		md_dev->pending_side = 0;
-		md_dev->pending_status = UNKNOWN;
-		pthread_mutex_unlock(&md_dev->status_lock);
-	}
+	clear_pending(md_dev);
+	pthread_mutex_unlock(&md_dev->status_lock);
+	if (!rc)
+		return 0;
 	return rc == 512 ? -EBUSY : -EIO;
 }
 
@@ -2002,6 +2016,7 @@ static int reset_md(struct md_monitor *md_dev)
 
 	pthread_mutex_lock(&md_dev->status_lock);
 	if (!md_dev->pending_side) {
+		clear_pending(md_dev);
 		pthread_mutex_unlock(&md_dev->status_lock);
 		warn("%s: no pending side", md_name);
 		return 0;
@@ -2010,13 +2025,15 @@ static int reset_md(struct md_monitor *md_dev)
 	pthread_mutex_lock(&md_dev->device_lock);
 	list_for_each_entry(dev, &md_dev->children, siblings) {
 		if (reset_component(dev) < 0) {
-			pthread_mutex_unlock(&md_dev->device_lock);
-			return 0;
+			ret = -EAGAIN;
+			break;
 		}
 	}
 	pthread_mutex_unlock(&md_dev->device_lock);
 	if (!md_name)
-		return -EINVAL;
+		ret = -EINVAL;
+	if (ret < 0)
+		goto out;
 
 	sprintf(cmdline, "mdadm --manage /dev/%s --re-add faulty", md_name);
 	dbg("%s: call 'system' '%s'", md_name, cmdline);
@@ -2028,13 +2045,13 @@ static int reset_md(struct md_monitor *md_dev)
 			ret = -EBUSY;
 		else
 			ret = -EIO;
-	} else {
-		pthread_mutex_lock(&md_dev->status_lock);
-		md_dev->degraded = 0;
-		md_dev->pending_side = 0;
-		md_dev->pending_status = UNKNOWN;
-		pthread_mutex_unlock(&md_dev->status_lock);
 	}
+out:
+	pthread_mutex_lock(&md_dev->status_lock);
+	if (!ret)
+		md_dev->degraded = 0;
+	clear_pending(md_dev);
+	pthread_mutex_unlock(&md_dev->status_lock);
 	return ret;
 }
 
