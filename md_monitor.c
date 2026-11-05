@@ -331,19 +331,53 @@ static int update_mirror_side(struct md_monitor *md_dev,
 }
 
 /*
- * Update the degraded and incomplete state of an array, and log changes.
- * Must be called with status_lock held.
+ * Set failfast on DASD members according to the mirror state.
+ * If one mirror side isn't healthy, the array must wait for I/O on the
+ * other side, which holds the only complete copy of the data. Thus
+ * failfast is only enabled on a side if the other side is healthy.
+ * Must be called with status_lock held, and device_lock not held.
+ */
+static void update_failfast(struct md_monitor *md_dev)
+{
+	struct device_monitor *rdev;
+
+	pthread_mutex_lock(&md_dev->device_lock);
+	list_for_each_entry(rdev, &md_dev->children, siblings) {
+		int side, failfast;
+
+		if (strncmp(rdev->dev_name, "dasd", 4))
+			continue;
+		pthread_mutex_lock(&rdev->lock);
+		side = rdev->md_side;
+		pthread_mutex_unlock(&rdev->lock);
+		if (side < 0)
+			continue;
+		failfast = is_healthy(md_dev, !side);
+		dbg("%s: setting failfast to %d", rdev->dev_name, failfast);
+		dasd_set_attribute(rdev, "failfast", failfast);
+	}
+	pthread_mutex_unlock(&md_dev->device_lock);
+}
+
+/*
+ * Update the degraded and incomplete state of an array, log changes,
+ * and adapt failfast. With force_failfast, failfast is updated even if
+ * the state is unchanged (e.g. on startup or for new devices).
+ * Must be called with status_lock held, and device_lock not held.
  */
 static void set_mirror_state(struct md_monitor *md_dev, int degraded,
-			     int incomplete, const char *caller)
+			     int incomplete, int force_failfast,
+			     const char *caller)
 {
-	if (md_dev->degraded == degraded && md_dev->incomplete == incomplete)
+	if (md_dev->degraded != degraded || md_dev->incomplete != incomplete) {
+		info("%s: setting degraded 0x%x -> 0x%x, incomplete 0x%x -> 0x%x (%s)",
+		     md_dev->dev_name, md_dev->degraded, degraded,
+		     md_dev->incomplete, incomplete, caller);
+		md_dev->degraded = degraded;
+		md_dev->incomplete = incomplete;
+	} else if (!force_failfast)
 		return;
-	info("%s: setting degraded 0x%x -> 0x%x, incomplete 0x%x -> 0x%x (%s)",
-	     md_dev->dev_name, md_dev->degraded, degraded,
-	     md_dev->incomplete, incomplete, caller);
-	md_dev->degraded = degraded;
-	md_dev->incomplete = incomplete;
+	update_failfast(md_dev);
 }
 
 static void check_mirror_status(struct md_monitor *md_dev)
@@ -402,7 +436,7 @@ static void check_mirror_status(struct md_monitor *md_dev)
 
 	/* A side with all devices in sync can't be failed */
 	set_mirror_state(md_dev, md_dev->degraded & new_incomplete,
-			 new_incomplete, __func__);
+			 new_incomplete, 1, __func__);
 	pthread_mutex_unlock(&md_dev->status_lock);
 
 	if ((new_incomplete & 3) == 3) {
@@ -714,6 +748,7 @@ static void attach_device(struct udev_device *udev_dev)
 	unlock_device_list();
 	if (found_md) {
 		const char *mdname = udev_device_get_sysname(found_md->device);
+		int added = 0;
 
 		pthread_mutex_lock(&found_md->device_lock);
 		if (!list_empty(&found->siblings)) {
@@ -724,8 +759,12 @@ static void attach_device(struct udev_device *udev_dev)
 			info("%s: Start monitoring %s", mdname, found->md_name);
 			list_add(&found->siblings, &found_md->children);
 			monitor_device(found);
+			added = 1;
 		}
 		pthread_mutex_unlock(&found_md->device_lock);
+		/* Set failfast for the new device */
+		if (added)
+			check_mirror_status(found_md);
 	} else {
 		dbg("%s: no md array found", devname);
 	}
@@ -1342,8 +1381,8 @@ static void add_component(struct md_monitor *md, struct device_monitor *dev,
 	if (!strncmp(dev->dev_name, "dasd", 4))
 		is_dasd = 1;
 	pthread_mutex_unlock(&dev->lock);
+	/* failfast is set in check_mirror_status() */
 	if (is_dasd) {
-		dasd_set_attribute(dev, "failfast", 1);
 		if (dasd_set_attribute(dev, "timeout",
 			(failfast_retries + 1) * failfast_timeout) < 0) {
 			dasd_set_attribute(dev, "failfast_retries",
@@ -1412,8 +1451,8 @@ static int reset_component(struct device_monitor *dev)
 	}
 
 	if (!strncmp(dev->dev_name, "dasd", 4)) {
+		/* failfast is restored in check_mirror_status() */
 		dasd_timeout_ioctl(dev->device, 0);
-		dasd_set_attribute(dev, "failfast", 1);
 	} else
 		mpath_modify_queueing(dev, 1, monitor_timeout);
 
@@ -1496,7 +1535,7 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		info("%s: other mirror side for %d is already failed",
 		     md_name, side);
 		set_mirror_state(md_dev, md_dev->degraded | (1 << side),
-				 md_dev->incomplete, __func__);
+				 md_dev->incomplete, 0, __func__);
 		pthread_mutex_unlock(&md_dev->status_lock);
 		pthread_mutex_lock(&md_dev->device_lock);
 		list_for_each_entry(tmp, &md_dev->children, siblings) {
@@ -1924,6 +1963,7 @@ static void discover_md_components(struct md_monitor *md)
 	md->in_discovery = 0;
 	pthread_mutex_unlock(&md->status_lock);
 	close(ioctl_fd);
+	check_mirror_status(md);
 }
 
 /*
@@ -1992,26 +2032,21 @@ static int fail_md(struct md_monitor *md_dev)
 		dbg("%s: mirror set-%c failed", md_name,
 		    (pending_side >> 1) ? 'B' : 'A');
 		pthread_mutex_lock(&md_dev->device_lock);
-		/*
-		 * When failing one side we need to disable the
-		 * 'failfast' setting on the other, as the array
-		 * is required to wait for I/O in this case.
-		 */
 		list_for_each_entry(dev, &md_dev->children, siblings) {
-			if (dev->md_side == (pending_side >> 1)) {
+			if (dev->md_side == (pending_side >> 1))
 				fail_component(dev, pending_status);
-			} else {
-				dasd_set_attribute(dev, "failfast", 0);
-			}
 		}
 		pthread_mutex_unlock(&md_dev->device_lock);
 	}
 	pthread_mutex_lock(&md_dev->status_lock);
-	/* The side remains incomplete until it has been resynced */
+	/*
+	 * The side remains incomplete until it has been resynced.
+	 * This disables failfast on the other side.
+	 */
 	if (!rc || rc == 512)
 		set_mirror_state(md_dev, md_dev->degraded | md_dev->pending_side,
 				 md_dev->incomplete | md_dev->pending_side,
-				 __func__);
+				 0, __func__);
 	clear_pending(md_dev);
 	pthread_mutex_unlock(&md_dev->status_lock);
 	if (!rc)
@@ -2061,7 +2096,7 @@ static int reset_md(struct md_monitor *md_dev)
 out:
 	pthread_mutex_lock(&md_dev->status_lock);
 	if (!ret)
-		set_mirror_state(md_dev, 0, md_dev->incomplete, __func__);
+		set_mirror_state(md_dev, 0, md_dev->incomplete, 0, __func__);
 	clear_pending(md_dev);
 	pthread_mutex_unlock(&md_dev->status_lock);
 	/*
@@ -2182,7 +2217,6 @@ static int monitor_md(struct udev_device *md_dev)
 		found->layout = info.layout;
 		found->level = info.level;
 		discover_md_components(found);
-		check_mirror_status(found);
 	} else {
 		const char *alias_name;
 
