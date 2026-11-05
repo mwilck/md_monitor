@@ -2007,9 +2007,11 @@ static int fail_md(struct md_monitor *md_dev)
 		pthread_mutex_unlock(&md_dev->device_lock);
 	}
 	pthread_mutex_lock(&md_dev->status_lock);
+	/* The side remains incomplete until it has been resynced */
 	if (!rc || rc == 512)
 		set_mirror_state(md_dev, md_dev->degraded | md_dev->pending_side,
-				 md_dev->incomplete, __func__);
+				 md_dev->incomplete | md_dev->pending_side,
+				 __func__);
 	clear_pending(md_dev);
 	pthread_mutex_unlock(&md_dev->status_lock);
 	if (!rc)
@@ -2062,6 +2064,14 @@ out:
 		set_mirror_state(md_dev, 0, md_dev->incomplete, __func__);
 	clear_pending(md_dev);
 	pthread_mutex_unlock(&md_dev->status_lock);
+	/*
+	 * The re-added devices are only in sync after the resync has
+	 * finished. check_mirror_status() will be called again on
+	 * SpareActive and RebuildFinished events; call it here, too,
+	 * in case the recovery has already finished.
+	 */
+	if (!ret)
+		check_mirror_status(md_dev);
 	return ret;
 }
 
@@ -2711,6 +2721,7 @@ void *cli_monitor_thread(void *ctx)
 		if (!strcmp(event, "RebuildFinished")) {
 			info("%s: Rebuild finished", md_dev->dev_name);
 			md_dev->in_recovery = 0;
+			check_mirror_status(md_dev);
 			buf[0] = 0;
 			iov.iov_len = 0;
 			goto send_msg;
