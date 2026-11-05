@@ -330,22 +330,41 @@ static int update_mirror_side(struct md_monitor *md_dev,
 	return dev->md_side;
 }
 
+/*
+ * Update the degraded and incomplete state of an array, and log changes.
+ * Must be called with status_lock held.
+ */
+static void set_mirror_state(struct md_monitor *md_dev, int degraded,
+			     int incomplete, const char *caller)
+{
+	if (md_dev->degraded == degraded && md_dev->incomplete == incomplete)
+		return;
+	info("%s: setting degraded 0x%x -> 0x%x, incomplete 0x%x -> 0x%x (%s)",
+	     md_dev->dev_name, md_dev->degraded, degraded,
+	     md_dev->incomplete, incomplete, caller);
+	md_dev->degraded = degraded;
+	md_dev->incomplete = incomplete;
+}
+
 static void check_mirror_status(struct md_monitor *md_dev)
 {
 	struct device_monitor *rdev;
 	int good[2] = {0, 0};
-	int i, incomplete, new_incomplete = 0;
+	int i, new_incomplete = 0;
 
 	if (!md_dev)
 		return;
 
+	/*
+	 * Hold status_lock during the scan, so that the mirror state
+	 * can't be changed by fail_mirror(), fail_md() or reset_md()
+	 * between reading the device states and updating it.
+	 */
 	pthread_mutex_lock(&md_dev->status_lock);
-	incomplete = md_dev->incomplete;
 	if (!md_dev->device) {
 		pthread_mutex_unlock(&md_dev->status_lock);
 		return;
 	}
-	pthread_mutex_unlock(&md_dev->status_lock);
 
 	pthread_mutex_lock(&md_dev->device_lock);
 	list_for_each_entry(rdev, &md_dev->children, siblings) {
@@ -381,20 +400,9 @@ static void check_mirror_status(struct md_monitor *md_dev)
 			dbg("%s: side %c is healthy, %d/%d disks",
 			    md_dev->dev_name, 'A' + i, good[i], md_dev->raid_disks / 2);
 
-	if (incomplete != new_incomplete) {
-		info("%s: setting incomplete to 0x%x", md_dev->dev_name,
-		     new_incomplete);
-		pthread_mutex_lock(&md_dev->status_lock);
-		md_dev->incomplete = new_incomplete;
-		pthread_mutex_unlock(&md_dev->status_lock);
-	}
 	/* A side with all devices in sync can't be failed */
-	pthread_mutex_lock(&md_dev->status_lock);
-	if (md_dev->degraded & ~new_incomplete) {
-		info("%s: setting degraded to 0x%x", md_dev->dev_name,
-		     md_dev->degraded & new_incomplete);
-		md_dev->degraded &= new_incomplete;
-	}
+	set_mirror_state(md_dev, md_dev->degraded & new_incomplete,
+			 new_incomplete, __func__);
 	pthread_mutex_unlock(&md_dev->status_lock);
 
 	if ((new_incomplete & 3) == 3) {
@@ -1487,7 +1495,8 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		/* Other side is failed or incomplete, do not notify md */
 		info("%s: other mirror side for %d is already failed",
 		     md_name, side);
-		md_dev->degraded |= (1 << side);
+		set_mirror_state(md_dev, md_dev->degraded | (1 << side),
+				 md_dev->incomplete, __func__);
 		pthread_mutex_unlock(&md_dev->status_lock);
 		pthread_mutex_lock(&md_dev->device_lock);
 		list_for_each_entry(tmp, &md_dev->children, siblings) {
@@ -1999,7 +2008,8 @@ static int fail_md(struct md_monitor *md_dev)
 	}
 	pthread_mutex_lock(&md_dev->status_lock);
 	if (!rc || rc == 512)
-		md_dev->degraded |= md_dev->pending_side;
+		set_mirror_state(md_dev, md_dev->degraded | md_dev->pending_side,
+				 md_dev->incomplete, __func__);
 	clear_pending(md_dev);
 	pthread_mutex_unlock(&md_dev->status_lock);
 	if (!rc)
@@ -2049,7 +2059,7 @@ static int reset_md(struct md_monitor *md_dev)
 out:
 	pthread_mutex_lock(&md_dev->status_lock);
 	if (!ret)
-		md_dev->degraded = 0;
+		set_mirror_state(md_dev, 0, md_dev->incomplete, __func__);
 	clear_pending(md_dev);
 	pthread_mutex_unlock(&md_dev->status_lock);
 	return ret;

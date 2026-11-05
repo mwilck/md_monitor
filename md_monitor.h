@@ -62,6 +62,12 @@ struct cli_monitor {
 	pthread_t thread;
 };
 
+/*
+ * Lock ordering: status_lock -> device_lock -> device_monitor.lock
+ *                status_lock -> pending_lock
+ *                device_lock -> global device_lock (lock_device_list())
+ * Never take status_lock while holding device_lock or a device lock.
+ */
 struct md_monitor {
 	char dev_name[MD_NAMELEN];
 	struct list_head entry;
