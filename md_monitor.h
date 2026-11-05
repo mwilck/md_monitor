@@ -63,7 +63,8 @@ struct cli_monitor {
 };
 
 /*
- * Lock ordering: status_lock -> device_lock -> device_monitor.lock
+ * Lock ordering: md_lock -> status_lock
+ *                status_lock -> device_lock -> device_monitor.lock
  *                status_lock -> pending_lock
  *                device_lock -> global device_lock (lock_device_list())
  * Never take status_lock while holding device_lock or a device lock.

@@ -34,6 +34,7 @@
 #include <signal.h>
 #include <getopt.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <limits.h>
@@ -2553,15 +2554,46 @@ static void print_device(struct udev_device *device)
 	}
 }
 
+/* Interval for check_all_mirrors() in seconds */
+#define MIRROR_CHECK_INTERVAL 60
+
+/*
+ * Recompute the mirror status of all arrays. md_monitor relies on events
+ * from mdadm --monitor to keep the degraded state up to date; this limits
+ * the time a stale state can persist if events are missed.
+ */
+static void check_all_mirrors(void)
+{
+	struct md_monitor *md_dev;
+
+	pthread_mutex_lock(&md_lock);
+	list_for_each_entry(md_dev, &md_list, entry) {
+		if (md_dev->raid_disks < 0 || md_dev->in_discovery)
+			continue;
+		check_mirror_status(md_dev);
+	}
+	pthread_mutex_unlock(&md_lock);
+}
+
 static void *mdadm_exec_thread (void *ctx)
 {
 	struct mdadm_exec *thr = ctx;
-	struct timespec tmo;
+	struct timespec tmo, now;
 	struct timeval start_time, end_time, diff;
 	struct list_head active_list;
 	struct md_monitor *md_dev, *tmp;
+	time_t last_check = 0;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+		last_check = now.tv_sec;
 
 	while (thr->running) {
+		/* The thread wakes up at least every failfast_timeout seconds */
+		if (clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
+		    now.tv_sec - last_check >= MIRROR_CHECK_INTERVAL) {
+			last_check = now.tv_sec;
+			check_all_mirrors();
+		}
 		INIT_LIST_HEAD(&active_list);
 		pthread_mutex_lock(&pending_lock);
 		if (list_empty(&pending_list)) {
