@@ -1649,9 +1649,16 @@ static void reset_mirror(struct device_monitor *dev)
 		if (tmp_side != side)
 			ready_devices++;
 		else if (tmp->io_status == IO_OK) {
-			if (tmp->md_slot >= 0) {
-				/* Notify monitor thread to re-check */
-				if (tmp->running && tmp->thread) {
+			/*
+			 * Notify monitor thread to re-check. Not for the
+			 * current thread, and not for spares with pending
+			 * recovery (e.g. in read-auto arrays); a re-check
+			 * wouldn't change their state, and the woken thread
+			 * would call reset_mirror() again right away.
+			 */
+			if (tmp->md_slot >= 0 && tmp->md_status != SPARE) {
+				if (tmp->running && tmp->thread &&
+				    !pthread_equal(tmp->thread, pthread_self())) {
 					thread = tmp->thread;
 					recheck = 1;
 				}
