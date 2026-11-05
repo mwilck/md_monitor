@@ -76,7 +76,10 @@ struct md_monitor {
 	int layout;
 	int level;
 	int in_recovery;
+	/* bitmask of mirror sides failed by md_monitor */
 	int degraded;
+	/* bitmask of mirror sides on which not all devices are in sync */
+	int incomplete;
 	int in_discovery;
 };
 

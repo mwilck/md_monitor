@@ -290,17 +290,27 @@ static struct md_monitor *lookup_md_alias(const char *mdpath)
 	return md;
 }
 
+/*
+ * A mirror side is healthy if md_monitor hasn't failed it, and all its
+ * devices are in sync. Must be called with status_lock held.
+ */
+static int is_healthy(struct md_monitor *md_dev, int side)
+{
+	return !(md_dev->degraded & (1 << side)) &&
+		!(md_dev->incomplete & (1 << side));
+}
+
 static void check_mirror_status(struct md_monitor *md_dev)
 {
 	struct device_monitor *rdev;
 	int good[2] = {0, 0};
-	int i, degraded, new_degraded = 0;
+	int i, incomplete, new_incomplete = 0;
 
 	if (!md_dev)
 		return;
 
 	pthread_mutex_lock(&md_dev->status_lock);
-	degraded = md_dev->degraded;
+	incomplete = md_dev->incomplete;
 	if (!md_dev->device) {
 		pthread_mutex_unlock(&md_dev->status_lock);
 		return;
@@ -334,22 +344,31 @@ static void check_mirror_status(struct md_monitor *md_dev)
 
 	for (i = 0; i < ARRAY_SIZE(good); i++)
 		if (good[i] < md_dev->raid_disks / 2) {
-			new_degraded |= (1 << i);
-			warn("%s: side %c is degraded, only %d/%d disks",
+			new_incomplete |= (1 << i);
+			warn("%s: side %c is incomplete, only %d/%d disks",
 			     md_dev->dev_name, 'A' + i, good[i], md_dev->raid_disks / 2);
 		} else
 			dbg("%s: side %c is healthy, %d/%d disks",
 			    md_dev->dev_name, 'A' + i, good[i], md_dev->raid_disks / 2);
 
-	if (degraded != new_degraded) {
-		info("%s: setting degraded to 0x%x", md_dev->dev_name, new_degraded);
+	if (incomplete != new_incomplete) {
+		info("%s: setting incomplete to 0x%x", md_dev->dev_name,
+		     new_incomplete);
 		pthread_mutex_lock(&md_dev->status_lock);
-		md_dev->degraded = new_degraded;
+		md_dev->incomplete = new_incomplete;
 		pthread_mutex_unlock(&md_dev->status_lock);
 	}
+	/* A side with all devices in sync can't be failed */
+	pthread_mutex_lock(&md_dev->status_lock);
+	if (md_dev->degraded & ~new_incomplete) {
+		info("%s: setting degraded to 0x%x", md_dev->dev_name,
+		     md_dev->degraded & new_incomplete);
+		md_dev->degraded &= new_incomplete;
+	}
+	pthread_mutex_unlock(&md_dev->status_lock);
 
-	if ((new_degraded & 3) == 3) {
-		warn("%s: both array sides are degraded on monitor startup",
+	if ((new_incomplete & 3) == 3) {
+		warn("%s: both array sides are incomplete",
 		     md_dev->dev_name);
 	}
 }
@@ -1423,8 +1442,8 @@ static void fail_mirror(struct device_monitor *dev, enum md_rdev_status status)
 		/* Mirror side is already failed, nothing to be done here */
 		info("%s: mirror side %d is already failed", md_name, dev->md_side);
 		pthread_mutex_unlock(&md_dev->status_lock);
-	} else if (md_dev->degraded) {
-		/* Mirror is already degraded, do not notify md */
+	} else if (!is_healthy(md_dev, !dev->md_side)) {
+		/* Other side is failed or incomplete, do not notify md */
 		info("%s: other mirror side for %d is already failed",
 		     md_name, dev->md_side);
 		md_dev->degraded |= (1 << dev->md_side);
